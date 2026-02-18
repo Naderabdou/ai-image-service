@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+gunicorn
+torch
+torchvision
+pillow
+numpy
+open_clip_torch
