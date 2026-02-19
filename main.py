@@ -7,6 +7,7 @@ import open_clip
 import numpy as np
 import io
 import os
+import base64
 
 app = FastAPI(title="Internal AI Image Matching Service")
 
@@ -45,6 +46,10 @@ def health():
 
 @app.post("/embed-image")
 async def embed_image(file: UploadFile = File(...)):
+    """
+    معالجة صورة واحدة
+    ✅ للـ testing والـ debugging فقط
+    """
     contents = await file.read()
 
     image = Image.open(io.BytesIO(contents)).convert("RGB")
@@ -60,26 +65,69 @@ async def embed_image(file: UploadFile = File(...)):
 
 
 class BatchEmbeddingRequest(BaseModel):
-    images: List[str]  # base64 images
+    images: List[str]  # base64 encoded images
 
 
 @app.post("/embed-batch")
 def embed_batch(req: BatchEmbeddingRequest):
+    """
+    ✅ معالجة صور متعددة في دفعة واحدة (أسرع بكثير!)
+    - بدل Job لكل صورة، نرسل الصور كلها دفعة واحدة
+    - أسرع وأكفأ من single images
+
+    Input:
+    {
+        "images": [
+            "base64_image_1",
+            "base64_image_2",
+            "base64_image_3"
+        ]
+    }
+
+    Output:
+    {
+        "embeddings": [
+            [0.1, 0.2, ...],
+            [0.3, 0.4, ...],
+            [0.5, 0.6, ...]
+        ]
+    }
+    """
     embeddings = []
 
-    for img_base64 in req.images:
-        image_data = io.BytesIO(base64.b64decode(img_base64))
-        image = Image.open(image_data).convert("RGB")
-        image = preprocess(image).unsqueeze(0).to(DEVICE)
+    for i, img_base64 in enumerate(req.images):
+        try:
+            # Decode base64 to bytes
+            try:
+                image_bytes = base64.b64decode(img_base64)
+            except Exception as e:
+                print(f"Error decoding base64 at index {i}: {e}")
+                embeddings.append(None)
+                continue
 
-        with torch.no_grad():
-            embedding = model.encode_image(image)
-            embedding = embedding / embedding.norm(dim=-1, keepdim=True)
+            # Open image
+            image_data = io.BytesIO(image_bytes)
+            image = Image.open(image_data).convert("RGB")
 
-        vector = embedding.squeeze().cpu().numpy()
-        embeddings.append(vector.tolist())
+            # Preprocess
+            image_tensor = preprocess(image).unsqueeze(0).to(DEVICE)
 
-    return {"embeddings": embeddings}
+            # Generate embedding
+            with torch.no_grad():
+                embedding = model.encode_image(image_tensor)
+                embedding = embedding / embedding.norm(dim=-1, keepdim=True)
+
+            # Convert to list
+            vector = embedding.squeeze().cpu().numpy()
+            embeddings.append(vector.tolist())
+
+        except Exception as e:
+            print(f"Error processing image at index {i}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            embeddings.append(None)
+
+    return {"embeddings": embeddings, "count": len([e for e in embeddings if e is not None])}
 
 
 class SimilarityRequest(BaseModel):
@@ -89,6 +137,9 @@ class SimilarityRequest(BaseModel):
 
 @app.post("/similarity")
 def similarity(req: SimilarityRequest):
+    """
+    حساب التشابه بين embedding واحد وآخر
+    """
     v1 = np.array(req.vector1)
     v2 = np.array(req.vector2)
 
